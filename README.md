@@ -33,6 +33,7 @@ Job done. Open ssl_report.xlsx and you'll find all the relevant data related to 
 
 # Prerequisites
 sudo apt update && sudo apt install -y python3-pip python3-venv python3-full git
+
 pip install requests beautifulsoup4 cryptography openpyxl
 
 
