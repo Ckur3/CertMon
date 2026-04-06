@@ -1,8 +1,8 @@
 # CertMon
 Python scripts used to monitor SSL Certificated due dates and weaknesses
 
-domain_discovery.py needs a txt file (domains.txt) in input when launched. 
-Domains.txt must be compiled with a list of TLDs (one for each line)
+domain_discovery.py needs a txt file (domains.txt) in input when launched.
+Domains.txt must be compiled with a list of TLDs (one for each line) that you want to monitor and check.
 
 python3 domain_discovery.py -i domains.txt
 
@@ -13,7 +13,9 @@ The txt will be used as input for the certmon.py file: python3 certmon.py -i dis
 Once the script has completed the analysis for all the URLs, on the screen will appear a message like this:
 
 2026-04-06 09:43:22,164 [INFO] CSV saved → ssl_report.csv
+
 2026-04-06 09:43:25,836 [INFO] XLSX saved → ssl_report.xlsx  (1518 rows, 764 flagged)
+
 {
   "total_scanned": 1518,
   "expired": 65,
@@ -23,9 +25,9 @@ Once the script has completed the analysis for all the URLs, on the screen will 
   "csv": "ssl_report.csv",
   "xlsx": "ssl_report.xlsx"
 }
-In the directory you'll find 2 files: ssl_report.csv  ssl_report.xlsx
 
-Job done. Open ssl_report.xlsx and you'll find all the relevant data related to yours ssl certificates:
+
+Job done. Open ssl_report.xlsx and you'll find all the relevant data related to yours ssl certificates.
 
 
 
