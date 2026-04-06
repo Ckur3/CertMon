@@ -1,5 +1,5 @@
 # CertMon
-Python scripts used to monitor SSL Certificated due dates and weaknesses
+Python scripts used to monitor SSL Certificates Status:due dates, misconfigurations and weaknesses
 
 domain_discovery.py needs a txt file (domains.txt) in input when launched.
 Domains.txt must be compiled with a list of TLDs (one for each line) that you want to monitor and check.
