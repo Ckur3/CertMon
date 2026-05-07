@@ -29,7 +29,7 @@ Once the script has completed the analysis for all the URLs, on the screen will 
 
 Job done. Open ssl_report.xlsx and you'll find all the relevant data related to yours ssl certificates.
 
-
+if you want to detect also WAF presence, launch instead cert_waf_monitor.py -i discovered_urls.txt
 
 # Prerequisites
 sudo apt update && sudo apt install -y python3-pip python3-venv python3-full git
