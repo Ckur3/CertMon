@@ -861,27 +861,15 @@ def write_txt(entries: Dict[str, DiscoveredEntry], path: Path) -> None:
     • Deduplicate after normalisation (e.g. http://host/ and https://host/
       both resolve to https://host/).
     """
-    seen_https: set = set()
-    ordered: list  = []
 
-    # Pass 1 — collect https:// entries directly
-    for url in sorted(entries.keys()):
-        if url.startswith("https://"):
-            seen_https.add(url)
-            ordered.append(url)
+    urls = sorted({
+        e.url
+        for e in entries.values()
+        if e.url.startswith(("http://", "https://"))
+    })
+    path.write_text("\n".join(urls) + "\n", encoding="utf-8")
+    log.info("Saved %d URLs → %s", len(urls), path)
 
-    # Pass 2 — upgrade http:// entries that have no https counterpart
-    for url in sorted(entries.keys()):
-        if url.startswith("http://"):
-            upgraded = _to_https(url)
-            if upgraded not in seen_https:
-                seen_https.add(upgraded)
-                ordered.append(upgraded)
-                log.debug("Upgraded http→https for output: %s → %s", url, upgraded)
-
-    final = sorted(set(ordered))
-    path.write_text("\n".join(final) + "\n", encoding="utf-8")
-    log.info("Saved %d HTTPS URLs → %s", len(final), path)
 
 
 def write_json(entries: Dict[str, DiscoveredEntry], path: Path) -> None:
