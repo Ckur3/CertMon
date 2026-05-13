@@ -44,7 +44,7 @@ Network / WAF:
 
 Output columns (CSV + XLSX)
 ---------------------------
-  url, host, port, resolved_ip, scan_status, http_status, hsts,
+  url, host, port, resolved_ip, ip_whois, scan_status, http_status, hsts,
   http_to_https_redirect, waf_f5, waf_akamai, waf_azure, waf_aws, waf_detected,
   cert_subject_cn, cert_subject_o, cert_issuer_cn, cert_issuer_o,
   serial_number, sig_algorithm, public_key_type, public_key_bits,
@@ -72,13 +72,14 @@ import csv
 import datetime as dt
 import json
 import logging
+import ipaddress
 import re
 import socket
 import ssl
 import sys
 from dataclasses import dataclass, asdict, fields
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from urllib.parse import urlparse, urlunparse
 
 import requests
@@ -135,6 +136,7 @@ class CertRow:
     host:                   str = ""
     port:                   int = 443
     resolved_ip:            str = ""   # primo IP risolto (IPv4 preferito, fallback IPv6)
+    ip_whois:                str = ""   # WHOIS/RDAP summary for resolved public IP
     scan_status:            str = ""   # ok | no_ssl | unreachable | error
     http_status:            str = ""
     hsts:                   str = ""   # yes | no | n/a
@@ -442,6 +444,130 @@ def _resolve_ip(host: str, timeout: int = 5) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# IP WHOIS / RDAP lookup
+# ──────────────────────────────────────────────────────────────────────────────
+_RDAP_CACHE: Dict[str, str] = {}
+_RIR_RDAP_BOOTSTRAP = "https://data.iana.org/rdap/ipv4.json"
+_DEFAULT_RDAP_URLS = [
+    "https://rdap.arin.net/registry/ip/{ip}",
+    "https://rdap.db.ripe.net/ip/{ip}",
+    "https://rdap.apnic.net/ip/{ip}",
+    "https://rdap.lacnic.net/rdap/ip/{ip}",
+    "https://rdap.afrinic.net/rdap/ip/{ip}",
+]
+
+
+def _clean_ip_for_whois(ip_value: str) -> str:
+    return (ip_value or "").strip().strip("[]")
+
+
+def _is_public_ip(ip_value: str) -> bool:
+    try:
+        ip_obj = ipaddress.ip_address(_clean_ip_for_whois(ip_value))
+        return ip_obj.is_global
+    except Exception:
+        return False
+
+
+def _entity_names(entities: List[Dict[str, Any]]) -> List[str]:
+    names: List[str] = []
+    for ent in entities or []:
+        vcard = ent.get("vcardArray", [])
+        if isinstance(vcard, list) and len(vcard) > 1:
+            for item in vcard[1]:
+                if isinstance(item, list) and len(item) >= 4 and item[0] in ("fn", "org"):
+                    value = str(item[3]).strip()
+                    if value and value not in names:
+                        names.append(value)
+        if len(names) >= 3:
+            break
+    return names
+
+
+def _rdap_summary(data: Dict[str, Any]) -> str:
+    """Return a compact, spreadsheet-friendly RDAP/WHOIS summary."""
+    parts: List[str] = []
+    for key, label in (("name", "name"), ("handle", "handle"), ("type", "type"), ("country", "country")):
+        val = str(data.get(key, "") or "").strip()
+        if val:
+            parts.append(f"{label}:{val}")
+    start = str(data.get("startAddress", "") or "").strip()
+    end = str(data.get("endAddress", "") or "").strip()
+    if start and end:
+        parts.append(f"range:{start}-{end}")
+    names = _entity_names(data.get("entities", []))
+    if names:
+        parts.append("entity:" + "; ".join(names))
+    notices = data.get("notices", []) or []
+    for notice in notices:
+        title = str(notice.get("title", "") or "").strip()
+        if title and "terms" not in title.lower():
+            parts.append(f"notice:{title}")
+            break
+    return " | ".join(parts)[:1000]
+
+
+def _rdap_lookup(ip_value: str, timeout: int) -> str:
+    """Best-effort RDAP lookup for a public IP; returns a compact WHOIS-like summary."""
+    ip = _clean_ip_for_whois(ip_value)
+    if not ip:
+        return ""
+    if not _is_public_ip(ip):
+        return "non_public_ip"
+    if ip in _RDAP_CACHE:
+        return _RDAP_CACHE[ip]
+
+    session = requests.Session()
+    session.headers["User-Agent"] = USER_AGENT
+
+    # Try IANA bootstrap first, then fall back to the major RIR endpoints.
+    rdap_urls: List[str] = []
+    try:
+        bootstrap = session.get(_RIR_RDAP_BOOTSTRAP, timeout=min(timeout, 10))
+        if bootstrap.ok:
+            bdata = bootstrap.json()
+            ip_obj = ipaddress.ip_address(ip)
+            for service in bdata.get("services", []):
+                ranges, urls = service[0], service[1]
+                for cidr in ranges:
+                    try:
+                        if ip_obj in ipaddress.ip_network(cidr, strict=False):
+                            rdap_urls.extend(f"{u.rstrip('/')}/ip/{ip}" for u in urls)
+                            raise StopIteration
+                    except ValueError:
+                        continue
+                else:
+                    continue
+                break
+    except StopIteration:
+        pass
+    except Exception as exc:
+        log.debug("IANA RDAP bootstrap failed for %s: %s", ip, exc)
+
+    rdap_urls.extend(url.format(ip=ip) for url in _DEFAULT_RDAP_URLS)
+
+    seen_urls = set()
+    for url in rdap_urls:
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        try:
+            resp = session.get(url, timeout=min(timeout, 10))
+            if not resp.ok:
+                continue
+            summary = _rdap_summary(resp.json())
+            if summary:
+                _RDAP_CACHE[ip] = summary
+                return summary
+        except Exception as exc:
+            log.debug("RDAP lookup failed for %s via %s: %s", ip, url, exc)
+            continue
+
+    _RDAP_CACHE[ip] = "whois_unavailable"
+    return _RDAP_CACHE[ip]
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # WAF detection — F5 BIG-IP, Akamai, Azure, AWS
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -642,6 +768,7 @@ def scan_host(url: str, host: str, port: int, warn_days: int, timeout: int) -> C
 
     # ── Risoluzione IP ────────────────────────────────────────────────────────
     row.resolved_ip = _resolve_ip(host, timeout)
+    row.ip_whois = _rdap_lookup(row.resolved_ip, timeout) if row.resolved_ip else ""
 
     # ── Fetch raw certificate (no chain validation) ───────────────────────────
     der = cipher = version = None
@@ -971,7 +1098,7 @@ def write_xlsx(rows: List[CertRow], path: Path, warn_days: int) -> None:
     # ── Sheet 2: Issues summary ───────────────────────────────────────────────
     ws2 = wb.create_sheet("Issues & Warnings")
     ws2.row_dimensions[1].height = 28
-    sum_cols = ["url", "host", "resolved_ip", "waf_f5", "waf_akamai", "waf_azure",
+    sum_cols = ["url", "host", "resolved_ip", "ip_whois", "waf_f5", "waf_akamai", "waf_azure",
                 "waf_aws", "waf_detected", "expiry_status", "days_until_expiry",
                 "chain_trusted", "hostname_match", "self_signed",
                 "deprecated_tls10", "deprecated_tls11",
@@ -1082,7 +1209,7 @@ def write_xlsx(rows: List[CertRow], path: Path, warn_days: int) -> None:
     # ── Sheet 4: Unreachable / No-SSL hosts ───────────────────────────────────
     ws4 = wb.create_sheet("Unreachable & No-SSL")
     ws4.row_dimensions[1].height = 28
-    skip_cols = ["url", "host", "port", "scan_status", "error_detail", "scanned_at"]
+    skip_cols = ["url", "host", "port", "resolved_ip", "ip_whois", "scan_status", "error_detail", "scanned_at"]
     skip_hdrs = [c.replace("_", " ").title() for c in skip_cols]
     for ci, h in enumerate(skip_hdrs, 1):
         c = ws4.cell(row=1, column=ci, value=h)
